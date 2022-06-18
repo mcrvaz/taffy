@@ -1,7 +1,6 @@
 //! Forest - a struct-of-arrays data structure for storing node trees.
 //!
 //! Backing data structure for `Taffy` structs.
-use crate::geometry::Size;
 use crate::layout::{Cache, Layout};
 use crate::node::{MeasureFunc, NodeId};
 use crate::style::FlexboxLayout;
@@ -242,11 +241,5 @@ impl Forest {
         }
 
         mark_dirty_recursive(&mut self.nodes, &self.parents, node);
-    }
-
-    /// Computes the layout of the `node` and its children
-    pub(crate) fn compute_layout(&mut self, node: NodeId, size: Size<Option<f32>>) {
-        // TODO: It's not clear why this method is distinct
-        self.compute(node, size)
     }
 }
