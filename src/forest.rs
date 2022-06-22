@@ -1,8 +1,10 @@
 //! Forest - a struct-of-arrays data structure for storing node trees.
 //!
 //! Backing data structure for `Taffy` structs.
+use std::collections::HashSet;
+
 use crate::layout::{Cache, Layout};
-use crate::node::{MeasureFunc, NodeId};
+use crate::node::{self, MeasureFunc, NodeId};
 use crate::style::FlexboxLayout;
 use crate::sys::{new_vec_with_capacity, ChildrenVec, ParentsVec, Vec};
 
@@ -232,14 +234,215 @@ impl Forest {
         /// Performs a recursive depth-first search up the tree until the root node is reached
         ///
         ///  WARNING: this will stack-overflow if the tree contains a cycle
-        fn mark_dirty_recursive(nodes: &mut Vec<NodeData>, parents: &[ParentsVec<NodeId>], node_id: NodeId) {
+        fn mark_dirty_recursive(
+            visited_nodes: &mut HashSet<NodeId>,
+            nodes: &mut Vec<NodeData>,
+            parents: &[ParentsVec<NodeId>],
+            node_id: NodeId,
+        ) {
+            if !visited_nodes.insert(node_id) {
+                panic!("Tree contains cycles. NodeId: {}", node_id);
+            }
+
             nodes[node_id].mark_dirty();
 
             for parent in &parents[node_id] {
-                mark_dirty_recursive(nodes, parents, *parent);
+                mark_dirty_recursive(visited_nodes, nodes, parents, *parent);
             }
         }
 
-        mark_dirty_recursive(&mut self.nodes, &self.parents, node);
+        // TODO how to use HashSets properly in this project
+        let mut visited_nodes = HashSet::with_capacity(self.nodes.len() + self.parents.len());
+        mark_dirty_recursive(&mut visited_nodes, &mut self.nodes, &self.parents, node);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Forest, NodeData};
+    use crate::geometry::Size;
+    use crate::node::{MeasureFunc, NodeId};
+    use crate::style::FlexboxLayout;
+
+    /*
+        Notes:
+        The tree is built from bottom-up, starting from its leafs.
+        `mark_dirty` must not stack-overflow if the tree contains a cycle.
+        `new_with_children` expects a `ChildrenVec` with only valid children. This is not explicit.
+    */
+
+    fn empty_measure_fn() -> MeasureFunc {
+        MeasureFunc::Raw(|_| Size::zero())
+    }
+
+    fn zero_option_size() -> Size<Option<f32>> {
+        Size { width: Some(0.0), height: Some(0.0) }
+    }
+
+    fn node_measure_eq(node: &NodeData, measure_fn: fn(Size<Option<f32>>) -> Size<f32>) -> bool {
+        match node.measure.as_ref().unwrap() {
+            MeasureFunc::Raw(m) => measure_fn(zero_option_size()) == m(zero_option_size()),
+            _ => false,
+        }
+    }
+
+    fn add_default_leaf(forest: &mut Forest) -> NodeId {
+        forest.new_leaf(FlexboxLayout::default(), empty_measure_fn())
+    }
+
+    #[test]
+    fn with_capacity() {
+        let capacity: usize = 1;
+
+        let forest = Forest::with_capacity(capacity);
+
+        assert_eq!(forest.nodes.capacity(), capacity);
+        assert_eq!(forest.children.capacity(), capacity);
+        assert_eq!(forest.parents.capacity(), capacity);
+    }
+
+    #[test]
+    fn new_leaf_first_leaf() {
+        let mut forest = Forest::with_capacity(1);
+        let s1 = FlexboxLayout { flex_grow: 1.0, ..Default::default() };
+        let measure_fn1 = |_| Size { width: 1.0, height: 1.0 };
+
+        let id = forest.new_leaf(s1, MeasureFunc::Raw(measure_fn1));
+
+        let node = &forest.nodes[0];
+        assert_eq!(id, 0);
+        assert_eq!(node.style, s1);
+        assert!(node_measure_eq(&node, measure_fn1));
+        assert_eq!(forest.nodes.len(), 1);
+        assert_eq!(forest.children.len(), 1);
+        assert_eq!(forest.parents.len(), 1);
+    }
+
+    #[test]
+    fn new_leaf_second_leaf() {
+        let mut forest = Forest::with_capacity(2);
+        let s1 = FlexboxLayout { flex_grow: 1.0, ..Default::default() };
+        let s2 = FlexboxLayout { flex_grow: 2.0, ..Default::default() };
+        let measure_fn1 = |_| Size { width: 1.0, height: 1.0 };
+        let measure_fn2 = |_| Size { width: 2.0, height: 2.0 };
+
+        forest.new_leaf(s1, MeasureFunc::Raw(measure_fn1));
+        let id = forest.new_leaf(s2, MeasureFunc::Raw(measure_fn2));
+
+        let node = &forest.nodes[1];
+        assert_eq!(id, 1);
+        assert_eq!(node.style, s2);
+        assert!(node_measure_eq(&node, measure_fn2));
+        assert_eq!(forest.nodes.len(), 2);
+        assert_eq!(forest.children.len(), 2);
+        assert_eq!(forest.parents.len(), 2);
+    }
+
+    #[test]
+    fn new_with_single_children() {
+        let mut forest = Forest::with_capacity(2);
+        let style = FlexboxLayout { flex_grow: 1.0, ..Default::default() };
+        let child_id = add_default_leaf(&mut forest);
+        let children = vec![child_id];
+
+        let id = forest.new_with_children(style, children);
+        let new_node = &forest.nodes[1];
+
+        assert_eq!(id, 1);
+        assert_eq!(new_node.style, style);
+        assert_eq!(forest.parents[child_id][0], id);
+        assert_eq!(forest.children[id][0], child_id);
+        assert_eq!(forest.nodes.len(), 2);
+        assert_eq!(forest.children.len(), 2);
+        assert_eq!(forest.parents.len(), 2);
+    }
+
+    #[test]
+    fn new_with_multiple_children() {
+        let mut forest = Forest::with_capacity(2);
+        let style = FlexboxLayout { flex_grow: 1.0, ..Default::default() };
+        let c1_id = add_default_leaf(&mut forest);
+        let c2_id = add_default_leaf(&mut forest);
+        let children = vec![c1_id, c2_id];
+
+        let id = forest.new_with_children(style, children);
+        let new_node = &forest.nodes[2];
+
+        assert_eq!(id, 2);
+        assert_eq!(new_node.style, style);
+        assert_eq!(forest.parents[c1_id][0], id);
+        assert_eq!(forest.parents[c2_id][0], id);
+        assert_eq!(forest.children[id][0], c1_id);
+        assert_eq!(forest.children[id][1], c2_id);
+        assert_eq!(forest.nodes.len(), 3);
+        assert_eq!(forest.children.len(), 3);
+        assert_eq!(forest.parents.len(), 3);
+    }
+
+    #[test]
+    fn add_child() {
+        let mut forest = Forest::with_capacity(2);
+        let parent_id = add_default_leaf(&mut forest);
+        let child_id = add_default_leaf(&mut forest);
+        forest.add_child(parent_id, child_id);
+
+        let parent = &forest.nodes[0];
+
+        assert_eq!(forest.parents[child_id][0], parent_id);
+        assert_eq!(forest.children[parent_id][0], child_id);
+        assert!(parent.is_dirty);
+    }
+
+    #[test]
+    fn add_second_child() {
+        let mut forest = Forest::with_capacity(2);
+        let parent_id = add_default_leaf(&mut forest);
+        let c1_id = add_default_leaf(&mut forest);
+        let c2_id = add_default_leaf(&mut forest);
+        forest.add_child(parent_id, c1_id);
+        forest.add_child(parent_id, c2_id);
+
+        let parent = &forest.nodes[0];
+
+        assert_eq!(forest.parents[c1_id][0], parent_id);
+        assert_eq!(forest.parents[c2_id][0], parent_id);
+        assert_eq!(forest.children[parent_id][0], c1_id);
+        assert_eq!(forest.children[parent_id][1], c2_id);
+        assert!(parent.is_dirty);
+    }
+
+    #[test]
+    fn clear() {
+        let mut forest = Forest::with_capacity(1);
+        add_default_leaf(&mut forest);
+        forest.clear();
+        assert_eq!(forest.nodes.len(), 0);
+        assert_eq!(forest.children.len(), 0);
+        assert_eq!(forest.parents.len(), 0);
+    }
+
+    #[test]
+    fn swap_remove() {
+        // TODO
+    }
+
+    #[test]
+    fn remove_child() {
+        // TODO
+    }
+
+    #[test]
+    fn remove_child_at_index() {
+        // TODO
+    }
+
+    #[test]
+    fn mark_dirty() {
+        // TODO
+    }
+
+    #[test]
+    fn mark_dirty_cycle() {
+        // TODO
     }
 }
