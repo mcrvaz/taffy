@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use crate::layout::{Cache, Layout};
-use crate::node::{self, MeasureFunc, NodeId};
+use crate::node::{MeasureFunc, NodeId};
 use crate::style::FlexboxLayout;
 use crate::sys::{new_vec_with_capacity, ChildrenVec, ParentsVec, Vec};
 
@@ -267,13 +267,12 @@ mod tests {
     /*
         Notes:
         The tree is built from bottom-up, starting from its leafs.
-        `mark_dirty` must not stack-overflow if the tree contains a cycle.
+        `mark_dirty` should not stack-overflow if the tree contains a cycle.
         `new_with_children` expects a `ChildrenVec` with only valid children. This is not explicit.
+        Not sure if possible to add multiple parents to same node.
+        `remove_child` panics when trying to remove invalid node. Is this expected?
+        Should panic conditions be tested?
     */
-
-    fn empty_measure_fn() -> MeasureFunc {
-        MeasureFunc::Raw(|_| Size::zero())
-    }
 
     fn zero_option_size() -> Size<Option<f32>> {
         Size { width: Some(0.0), height: Some(0.0) }
@@ -287,7 +286,7 @@ mod tests {
     }
 
     fn add_default_leaf(forest: &mut Forest) -> NodeId {
-        forest.new_leaf(FlexboxLayout::default(), empty_measure_fn())
+        forest.new_leaf(FlexboxLayout::default())
     }
 
     #[test]
@@ -305,9 +304,41 @@ mod tests {
     fn new_leaf_first_leaf() {
         let mut forest = Forest::with_capacity(1);
         let s1 = FlexboxLayout { flex_grow: 1.0, ..Default::default() };
+
+        let id = forest.new_leaf(s1);
+
+        let node = &forest.nodes[0];
+        assert_eq!(id, 0);
+        assert_eq!(node.style, s1);
+        assert_eq!(forest.nodes.len(), 1);
+        assert_eq!(forest.children.len(), 1);
+        assert_eq!(forest.parents.len(), 1);
+    }
+
+    #[test]
+    fn new_leaf_second_leaf() {
+        let mut forest = Forest::with_capacity(2);
+        let s1 = FlexboxLayout { flex_grow: 1.0, ..Default::default() };
+        let s2 = FlexboxLayout { flex_grow: 2.0, ..Default::default() };
+
+        forest.new_leaf(s1);
+        let id = forest.new_leaf(s2);
+
+        let node = &forest.nodes[1];
+        assert_eq!(id, 1);
+        assert_eq!(node.style, s2);
+        assert_eq!(forest.nodes.len(), 2);
+        assert_eq!(forest.children.len(), 2);
+        assert_eq!(forest.parents.len(), 2);
+    }
+
+    #[test]
+    fn new_leaf_with_measure_first_leaf() {
+        let mut forest = Forest::with_capacity(1);
+        let s1 = FlexboxLayout { flex_grow: 1.0, ..Default::default() };
         let measure_fn1 = |_| Size { width: 1.0, height: 1.0 };
 
-        let id = forest.new_leaf(s1, MeasureFunc::Raw(measure_fn1));
+        let id = forest.new_leaf_with_measure(s1, MeasureFunc::Raw(measure_fn1));
 
         let node = &forest.nodes[0];
         assert_eq!(id, 0);
@@ -319,15 +350,15 @@ mod tests {
     }
 
     #[test]
-    fn new_leaf_second_leaf() {
+    fn new_leaf_with_measure_second_leaf() {
         let mut forest = Forest::with_capacity(2);
         let s1 = FlexboxLayout { flex_grow: 1.0, ..Default::default() };
         let s2 = FlexboxLayout { flex_grow: 2.0, ..Default::default() };
         let measure_fn1 = |_| Size { width: 1.0, height: 1.0 };
         let measure_fn2 = |_| Size { width: 2.0, height: 2.0 };
 
-        forest.new_leaf(s1, MeasureFunc::Raw(measure_fn1));
-        let id = forest.new_leaf(s2, MeasureFunc::Raw(measure_fn2));
+        forest.new_leaf_with_measure(s1, MeasureFunc::Raw(measure_fn1));
+        let id = forest.new_leaf_with_measure(s2, MeasureFunc::Raw(measure_fn2));
 
         let node = &forest.nodes[1];
         assert_eq!(id, 1);
@@ -428,21 +459,82 @@ mod tests {
 
     #[test]
     fn remove_child() {
-        // TODO
+        // TODO test with multiple parents
+        let mut forest = Forest::with_capacity(2);
+        let parent_id = add_default_leaf(&mut forest);
+        let c1_id = add_default_leaf(&mut forest);
+        let c2_id = add_default_leaf(&mut forest);
+        forest.add_child(parent_id, c1_id);
+        forest.add_child(parent_id, c2_id);
+
+        let removed_id = forest.remove_child(parent_id, c1_id);
+        let parent = &forest.nodes[0];
+
+        assert!(parent.is_dirty);
+        assert_eq!(forest.children[parent_id].len(), 1);
+        assert_eq!(forest.parents[c1_id].len(), 0);
+        assert_eq!(forest.parents[c2_id].len(), 1);
+        assert_eq!(removed_id, c1_id);
+    }
+
+    #[test]
+    #[should_panic]
+    fn remove_invalid_child() {
+        let mut forest = Forest::with_capacity(2);
+        let parent_id = add_default_leaf(&mut forest);
+        let c1_id = add_default_leaf(&mut forest);
+        forest.add_child(parent_id, c1_id);
+
+        forest.remove_child(parent_id, 2);
     }
 
     #[test]
     fn remove_child_at_index() {
-        // TODO
+        // TODO test with multiple parents
+        let mut forest = Forest::with_capacity(2);
+        let parent_id = add_default_leaf(&mut forest);
+        let c1_id = add_default_leaf(&mut forest);
+        let c2_id = add_default_leaf(&mut forest);
+        forest.add_child(parent_id, c1_id);
+        forest.add_child(parent_id, c2_id);
+
+        let removed_id = forest.remove_child_at_index(parent_id, 0);
+        let parent = &forest.nodes[0];
+
+        assert!(parent.is_dirty);
+        assert_eq!(forest.children[parent_id].len(), 1);
+        assert_eq!(forest.parents[c1_id].len(), 0);
+        assert_eq!(forest.parents[c2_id].len(), 1);
+        assert_eq!(removed_id, c1_id);
     }
 
     #[test]
     fn mark_dirty() {
-        // TODO
+        let mut forest = Forest::with_capacity(2);
+        let parent_id = add_default_leaf(&mut forest);
+        let c1_id = add_default_leaf(&mut forest);
+        let c2_id = add_default_leaf(&mut forest);
+        forest.add_child(parent_id, c1_id);
+        forest.add_child(c1_id, c2_id);
+
+        forest.mark_dirty(c2_id);
+
+        assert!(forest.nodes[0].is_dirty);
+        assert!(forest.nodes[1].is_dirty);
+        assert!(forest.nodes[2].is_dirty);
     }
 
     #[test]
+    #[should_panic]
     fn mark_dirty_cycle() {
-        // TODO
+        let mut forest = Forest::with_capacity(2);
+        let parent_id = add_default_leaf(&mut forest);
+        let c1_id = add_default_leaf(&mut forest);
+        let c2_id = add_default_leaf(&mut forest);
+        forest.add_child(parent_id, c1_id);
+        forest.add_child(c1_id, c2_id);
+        forest.add_child(c2_id, parent_id);
+
+        forest.mark_dirty(c2_id);
     }
 }
