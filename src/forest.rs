@@ -176,7 +176,6 @@ impl Forest {
         }
 
         let last = self.nodes.len();
-
         if last != node {
             // Update ids for every child of the swapped in node.
             for child in &self.children[last] {
@@ -254,12 +253,15 @@ mod tests {
     /*
         Notes:
         The tree is built from bottom-up, starting from its leafs.
-        NodeId seems to be the same as the index.
-        `mark_dirty` should not stack-overflow if the tree contains a cycle.
-        `new_with_children` expects a `ChildrenVec` with only valid children. This is not explicit.
-        Not sure if possible to add multiple parents to same node.
-        `remove_child` panics when trying to remove invalid node. This doesn't seem like a nice behavior.
+        NodeId is the same as the index.
+
+        Questions:
         Should panic conditions be tested?
+
+        Suggestions:
+        `mark_dirty` should not stack-overflow if the tree contains a cycle.
+        `new_with_children` expects a `ChildrenVec` with only valid children. If the children are not present in the tree, it panics.
+        `remove_child` panics when trying to remove invalid node. This doesn't seem like a nice behavior since the node is already missing.
     */
 
     fn assert_forest_size(forest: &Forest, size: usize) {
@@ -425,6 +427,26 @@ mod tests {
     }
 
     #[test]
+    fn add_child_different_parents() {
+        let mut forest = Forest::with_capacity(2);
+        let p1_id = add_default_leaf(&mut forest);
+        let p2_id = add_default_leaf(&mut forest);
+        let c1_id = add_default_leaf(&mut forest);
+        forest.add_child(p1_id, c1_id);
+        forest.add_child(p2_id, c1_id);
+
+        let p1 = &forest.nodes[p1_id];
+        let p2 = &forest.nodes[p2_id];
+
+        assert_eq!(forest.parents[c1_id][0], p1_id);
+        assert_eq!(forest.parents[c1_id][1], p2_id);
+        assert_eq!(forest.children[p1_id][0], c1_id);
+        assert_eq!(forest.children[p2_id][0], c1_id);
+        assert!(p1.is_dirty);
+        assert!(p2.is_dirty);
+    }
+
+    #[test]
     fn clear() {
         let mut forest = Forest::with_capacity(1);
         add_default_leaf(&mut forest);
@@ -433,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn swap_remove_element() {
+    fn swap_remove_single() {
         let mut forest = Forest::with_capacity(2);
         let parent_id = add_default_leaf(&mut forest);
 
@@ -444,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn swap_remove_parent_element() {
+    fn swap_remove_parent() {
         let mut forest = Forest::with_capacity(2);
         let parent_id = add_default_leaf(&mut forest);
         let c1_id = add_default_leaf(&mut forest);
@@ -463,7 +485,27 @@ mod tests {
     }
 
     #[test]
-    fn swap_remove_first_child_element() {
+    fn swap_remove_nested_parent() {
+        let mut forest = Forest::with_capacity(2);
+        let parent_id = add_default_leaf(&mut forest);
+        let c1_id = add_default_leaf(&mut forest);
+        let c2_id = add_default_leaf(&mut forest);
+        forest.add_child(parent_id, c1_id);
+        forest.add_child(c1_id, c2_id);
+
+        let moved_id = forest.swap_remove(parent_id);
+        let new_c1_id = c1_id.clone();
+        let new_c2_id = parent_id.clone();
+
+        assert_eq!(moved_id, Some(c2_id));
+        assert_eq!(forest.parents[new_c1_id].len(), 0);
+        assert_eq!(forest.parents[new_c2_id].len(), 1);
+        assert_eq!(forest.parents[new_c2_id][0], new_c1_id);
+        assert_forest_size(&forest, 2);
+    }
+
+    #[test]
+    fn swap_remove_first_child() {
         let mut forest = Forest::with_capacity(2);
         let parent_id = add_default_leaf(&mut forest);
         let c1_id = add_default_leaf(&mut forest);
@@ -476,12 +518,14 @@ mod tests {
 
         assert_eq!(moved_id, Some(c2_id));
         assert_eq!(forest.children[parent_id].len(), 1);
+        assert_eq!(forest.children[parent_id][0], new_c2_id);
         assert_eq!(forest.parents[new_c2_id].len(), 1);
+        assert_eq!(forest.parents[new_c2_id][0], parent_id);
         assert_forest_size(&forest, 2);
     }
 
     #[test]
-    fn swap_remove_last_child_element() {
+    fn swap_remove_last_child() {
         let mut forest = Forest::with_capacity(2);
         let parent_id = add_default_leaf(&mut forest);
         let c1_id = add_default_leaf(&mut forest);
@@ -498,8 +542,19 @@ mod tests {
     }
 
     #[test]
+    fn swap_remove_disjoint() {
+        let mut forest = Forest::with_capacity(2);
+        let n1_id = add_default_leaf(&mut forest);
+        let n2_id = add_default_leaf(&mut forest);
+
+        let moved_id = forest.swap_remove(n1_id);
+
+        assert_eq!(moved_id, Some(n2_id));
+        assert_forest_size(&forest, 1);
+    }
+
+    #[test]
     fn remove_child() {
-        // TODO test with multiple parents; is it possible?
         let mut forest = Forest::with_capacity(2);
         let parent_id = add_default_leaf(&mut forest);
         let c1_id = add_default_leaf(&mut forest);
@@ -518,19 +573,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn remove_invalid_child() {
-        let mut forest = Forest::with_capacity(2);
-        let parent_id = add_default_leaf(&mut forest);
-        let c1_id = add_default_leaf(&mut forest);
-        forest.add_child(parent_id, c1_id);
-
-        forest.remove_child(parent_id, 2);
-    }
-
-    #[test]
     fn remove_child_at_index() {
-        // TODO test with multiple parents; is it possible?
         let mut forest = Forest::with_capacity(2);
         let parent_id = add_default_leaf(&mut forest);
         let c1_id = add_default_leaf(&mut forest);
