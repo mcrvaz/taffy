@@ -249,20 +249,7 @@ mod tests {
     use crate::geometry::Size;
     use crate::node::{MeasureFunc, NodeId};
     use crate::style::FlexboxLayout;
-
-    /*
-        Notes:
-        The tree is built from bottom-up, starting from its leafs.
-        NodeId is the same as the index.
-
-        Questions:
-        Should panic conditions be tested?
-
-        Suggestions:
-        `mark_dirty` should not stack-overflow if the tree contains a cycle.
-        `new_with_children` expects a `ChildrenVec` with only valid children. If the children are not present in the tree, it panics.
-        `remove_child` panics when trying to remove invalid node. This doesn't seem like a nice behavior since the node is already missing.
-    */
+    use crate::sys::new_vec_with_capacity;
 
     fn assert_forest_size(forest: &Forest, size: usize) {
         assert_eq!(forest.nodes.len(), size);
@@ -279,17 +266,6 @@ mod tests {
 
     fn add_default_leaf(forest: &mut Forest) -> NodeId {
         forest.new_leaf(FlexboxLayout::default())
-    }
-
-    #[test]
-    fn with_capacity() {
-        let capacity: usize = 1;
-
-        let forest = Forest::with_capacity(capacity);
-
-        assert_eq!(forest.nodes.capacity(), capacity);
-        assert_eq!(forest.children.capacity(), capacity);
-        assert_eq!(forest.parents.capacity(), capacity);
     }
 
     #[test]
@@ -357,16 +333,17 @@ mod tests {
     fn new_with_children_single() {
         let mut forest = Forest::with_capacity(2);
         let style = FlexboxLayout { flex_grow: 1.0, ..Default::default() };
-        let child_id = add_default_leaf(&mut forest);
-        let children = vec![child_id];
+        let c1_id = add_default_leaf(&mut forest);
+        let mut children = new_vec_with_capacity(1);
+        children.push(c1_id);
 
         let id = forest.new_with_children(style, children);
         let new_node = &forest.nodes[id];
 
         assert_eq!(id, 1);
         assert_eq!(new_node.style, style);
-        assert_eq!(forest.parents[child_id][0], id);
-        assert_eq!(forest.children[id][0], child_id);
+        assert_eq!(forest.parents[c1_id][0], id);
+        assert_eq!(forest.children[id][0], c1_id);
         assert_forest_size(&forest, 2);
     }
 
@@ -376,7 +353,9 @@ mod tests {
         let style = FlexboxLayout { flex_grow: 1.0, ..Default::default() };
         let c1_id = add_default_leaf(&mut forest);
         let c2_id = add_default_leaf(&mut forest);
-        let children = vec![c1_id, c2_id];
+        let mut children = new_vec_with_capacity(2);
+        children.push(c1_id);
+        children.push(c2_id);
 
         let id = forest.new_with_children(style, children);
         let new_node = &forest.nodes[id];
@@ -420,26 +399,6 @@ mod tests {
         assert_eq!(forest.children[parent_id][0], c1_id);
         assert_eq!(forest.children[parent_id][1], c2_id);
         assert!(parent.is_dirty);
-    }
-
-    #[test]
-    fn add_child_different_parents() {
-        let mut forest = Forest::with_capacity(3);
-        let p1_id = add_default_leaf(&mut forest);
-        let p2_id = add_default_leaf(&mut forest);
-        let c1_id = add_default_leaf(&mut forest);
-        forest.add_child(p1_id, c1_id);
-        forest.add_child(p2_id, c1_id);
-
-        let p1 = &forest.nodes[p1_id];
-        let p2 = &forest.nodes[p2_id];
-
-        assert_eq!(forest.parents[c1_id][0], p1_id);
-        assert_eq!(forest.parents[c1_id][1], p2_id);
-        assert_eq!(forest.children[p1_id][0], c1_id);
-        assert_eq!(forest.children[p2_id][0], c1_id);
-        assert!(p1.is_dirty);
-        assert!(p2.is_dirty);
     }
 
     #[test]
@@ -550,26 +509,6 @@ mod tests {
     }
 
     #[test]
-    fn swap_remove_multiple_parents() {
-        let mut forest = Forest::with_capacity(3);
-        let p1_id = add_default_leaf(&mut forest);
-        let p2_id = add_default_leaf(&mut forest);
-        let c1_id = add_default_leaf(&mut forest);
-
-        forest.add_child(p1_id, c1_id);
-        forest.add_child(p2_id, c1_id);
-
-        let moved_id = forest.swap_remove(p1_id);
-        let new_c1_id = p1_id.clone();
-
-        assert_eq!(moved_id, Some(c1_id));
-        assert_eq!(forest.children[p2_id].len(), 1);
-        assert_eq!(forest.parents[new_c1_id].len(), 1);
-        assert_eq!(forest.parents[new_c1_id][0], p2_id);
-        assert_forest_size(&forest, 2);
-    }
-
-    #[test]
     fn remove_child() {
         let mut forest = Forest::with_capacity(3);
         let parent_id = add_default_leaf(&mut forest);
@@ -589,31 +528,6 @@ mod tests {
     }
 
     #[test]
-    fn remove_child_multiple_parents() {
-        let mut forest = Forest::with_capacity(4);
-        let p1_id = add_default_leaf(&mut forest);
-        let p2_id = add_default_leaf(&mut forest);
-        let c1_id = add_default_leaf(&mut forest);
-        let c2_id = add_default_leaf(&mut forest);
-        forest.add_child(p1_id, c1_id);
-        forest.add_child(p2_id, c1_id);
-        forest.add_child(p1_id, c2_id);
-        forest.add_child(p2_id, c2_id);
-
-        let removed_id = forest.remove_child(p1_id, c1_id);
-        let p1 = &forest.nodes[p1_id];
-
-        assert!(p1.is_dirty);
-        assert_eq!(forest.children[p1_id].len(), 1);
-        assert_eq!(forest.children[p1_id][0], c2_id);
-        assert_eq!(forest.children[p2_id].len(), 2);
-        assert_eq!(forest.parents[c1_id].len(), 1);
-        assert_eq!(forest.parents[c1_id][0], p2_id);
-        assert_eq!(forest.parents[c2_id].len(), 2);
-        assert_eq!(removed_id, c1_id);
-    }
-
-    #[test]
     fn remove_child_at_index() {
         let mut forest = Forest::with_capacity(3);
         let parent_id = add_default_leaf(&mut forest);
@@ -629,31 +543,6 @@ mod tests {
         assert_eq!(forest.children[parent_id].len(), 1);
         assert_eq!(forest.parents[c1_id].len(), 0);
         assert_eq!(forest.parents[c2_id].len(), 1);
-        assert_eq!(removed_id, c1_id);
-    }
-
-    #[test]
-    fn remove_child_at_index_multiple_parents() {
-        let mut forest = Forest::with_capacity(3);
-        let p1_id = add_default_leaf(&mut forest);
-        let p2_id = add_default_leaf(&mut forest);
-        let c1_id = add_default_leaf(&mut forest);
-        let c2_id = add_default_leaf(&mut forest);
-        forest.add_child(p1_id, c1_id);
-        forest.add_child(p2_id, c1_id);
-        forest.add_child(p1_id, c2_id);
-        forest.add_child(p2_id, c2_id);
-
-        let removed_id = forest.remove_child_at_index(p1_id, 0);
-        let p1 = &forest.nodes[p1_id];
-
-        assert!(p1.is_dirty);
-        assert_eq!(forest.children[p1_id].len(), 1);
-        assert_eq!(forest.children[p1_id][0], c2_id);
-        assert_eq!(forest.children[p2_id].len(), 2);
-        assert_eq!(forest.parents[c1_id].len(), 1);
-        assert_eq!(forest.parents[c1_id][0], p2_id);
-        assert_eq!(forest.parents[c2_id].len(), 2);
         assert_eq!(removed_id, c1_id);
     }
 
